@@ -12,8 +12,7 @@
 
 #include <pcap.h>
 
-static const char b64chars[] = 
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 static unsigned char shiftb64(unsigned char c) {
   char *p = strchr(b64chars, c);
@@ -96,9 +95,7 @@ static void handle_pkt(u_char *arg, const struct pcap_pkthdr *hdr,
 
   ret = srtp_recv(s, buffer, &pktsize);
   if (ret != 0) {
-    fprintf(stderr, "frame %d dropped: decoding failed '%s'\n", frame_nr,
-      strerror(ret));
-
+    fprintf(stderr, "frame %d dropped: decoding failed '%s'\n", frame_nr, strerror(ret));
     return;
   }
 
@@ -112,7 +109,8 @@ static void handle_pkt(u_char *arg, const struct pcap_pkthdr *hdr,
 }
 
 static void usage(const char *arg0) {
-  fprintf(stderr, "usage: %s -k <base64 SDES key> [-d <rtp byte offset in packet>] [-t <srtp hmac tag length in bytes>]\n", arg0);
+  fprintf(stderr, "usage: %s -k <base64 SDES key> -i <ifile> [-d <rtp byte offset in packet>] [-t <srtp hmac tag length in bytes>]\n", arg0);
+  fprintf(stderr, "\t\tifile: name of input file or '-' for standard input\n", arg0);
   exit(1);
 }
 
@@ -124,9 +122,13 @@ int main(int argc, char **argv) {
   unsigned char *sdes = NULL;
   int taglen = 10;
   struct bpf_program pcap_filter;
+  char* ifile = NULL;
 
-  while ((c = getopt(argc, argv, "k:d:t:")) != -1) {
+  while ((c = getopt(argc, argv, "k:i:d:t:")) != -1) {
     switch (c) {
+    case 'i':
+        ifile = optarg;
+        break;
     case 'k':
       sdes = (unsigned char *) optarg;
       break;
@@ -141,18 +143,17 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (sdes == NULL) {
+  if (sdes == NULL || ifile == NULL) {
     usage(argv[0]);
   }
 
   decode_sdes(sdes, key, salt);
 
-  s = srtp_create(SRTP_ENCR_AES_CM, SRTP_AUTH_HMAC_SHA1, taglen,
-    SRTP_PRF_AES_CM, 0);
+  s = srtp_create(SRTP_ENCR_AES_CM, SRTP_AUTH_HMAC_SHA1, taglen, SRTP_PRF_AES_CM, 0);
   assert(s != NULL);
   srtp_setkey(s, key, sizeof(key), salt, sizeof(salt));
 
-  pcap = pcap_open_offline("-", errbuf);
+  pcap = pcap_open_offline(ifile, errbuf);
   if (!pcap) {
     fprintf(stderr, "libpcap failed to open file '%s'\n", errbuf);
     exit(1);
