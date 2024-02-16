@@ -8,16 +8,26 @@
 #include <getopt.h>
 #include <assert.h>
 
+#include "srtp-decrypt.h"
 #include "srtp.h"
+#include "debug.h"
 
 #include <pcap.h>
 
-static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+#define B64CHARS        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+static int rtp_offset = -1;         // start of RTP frame in the packet
+static int frame_nr = -1;
+static int decoded_packets = 0;
+static struct timeval start_tv = { 0, 0 };
+
+static void calculate_rtp_offset(pcap_t* pcap);
+
 
 static unsigned char shiftb64(unsigned char c) {
-  char *p = strchr(b64chars, c);
+  char *p = strchr(B64CHARS, c);
   assert(p);
-  return p-b64chars;
+  return p - B64CHARS;
 }
 
 static void decode_block(unsigned char *in, unsigned char *out) {
@@ -63,28 +73,26 @@ static void hexdump(const void *ptr, size_t size) {
   }
 }
 
-static int rtp_offset = -1; 
-static int frame_nr = -1;
-static int decoded_packets = 0;
-static struct timeval start_tv = {0, 0};
-
-static void handle_pkt(u_char *arg, const struct pcap_pkthdr *hdr,
-  const u_char *bytes) {
+static void handle_pkt(u_char *arg, const struct pcap_pkthdr *hdr,  const u_char *bytes) {
   unsigned char buffer[2048];
   size_t pktsize;
   int ret;
   struct timeval delta;
 
-  frame_nr += 1;
+  frame_nr++;
+
+  debugLog(2, "Packet[%d] - timestamp: %u.%u", frame_nr, hdr->ts.tv_sec, hdr->ts.tv_usec);
 
   if (hdr->caplen < rtp_offset) {
-    fprintf(stderr, "frame %d dropped: too short\n", frame_nr);
+    fprintf(stderr, "frame %d dropped: too short\n", frame_nr);     // packet is smaller then UDP frame
     return;
   }
 
-  memcpy(buffer, bytes + rtp_offset, hdr->caplen - rtp_offset);
+  // copying RTP frame into buffer
   pktsize = hdr->caplen - rtp_offset;
-
+  memcpy(buffer, bytes + rtp_offset, pktsize);
+  
+  // save timestamp from the the 1st packet
   if (frame_nr == 0) {
     start_tv = hdr->ts;
   } 
@@ -109,12 +117,14 @@ static void handle_pkt(u_char *arg, const struct pcap_pkthdr *hdr,
 }
 
 static void usage(const char *arg0) {
-  fprintf(stderr, "usage: %s -k <base64 SDES key> -i <ifile> [-d <rtp byte offset in packet>] [-t <srtp hmac tag length in bytes>]\n", arg0);
-  fprintf(stderr, "\t\tifile: name of input file or '-' for standard input\n", arg0);
+  fprintf(stderr, "usage: %s -k <base64 SDES key> -i <ifile> [-s <rtp byte offset in packet>] [-t <srtp hmac tag length in bytes>][-d]\n", arg0);
+  fprintf(stderr, "\t\tifile: name of input file or '-' for standard input\n");
+  fprintf(stderr, "\t\t-d   : debug\n");
   exit(1);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
   unsigned char key[16], salt[14];
   int c;
   char errbuf[PCAP_ERRBUF_SIZE];
@@ -124,7 +134,7 @@ int main(int argc, char **argv) {
   struct bpf_program pcap_filter;
   char* ifile = NULL;
 
-  while ((c = getopt(argc, argv, "k:i:d:t:")) != -1) {
+  while ((c = getopt(argc, argv, "k:i:s:t:d")) != -1) {
     switch (c) {
     case 'i':
         ifile = optarg;
@@ -132,16 +142,20 @@ int main(int argc, char **argv) {
     case 'k':
       sdes = (unsigned char *) optarg;
       break;
-    case 'd':
-      rtp_offset = atoi(optarg);
+    case 's':
+      rtp_offset = atoi(optarg);            // to override default calculation
       break;
     case 't':
       taglen = atoi(optarg);
       break;
+    case 'd':
+        increaseDebugLevel();
+        break;
     default:
       usage(argv[0]);
     }
   }
+  debugLog(1, "SRTP DECRYPT started");
 
   if (sdes == NULL || ifile == NULL) {
     usage(argv[0]);
@@ -165,17 +179,30 @@ int main(int argc, char **argv) {
     pcap_setfilter(pcap, &pcap_filter);
   }
 
-  if (rtp_offset == -1) {
-    switch(pcap_datalink(pcap)) {
-        case DLT_LINUX_SLL: rtp_offset = 44; break; /* 16 + 20 + 8 */;
-        default:
-            rtp_offset = 42; /* 14 + 20 + 8 */;
-    }  
-  }
+  // RTP offset
+  calculate_rtp_offset(pcap);
+  debugLog(1, "RTP offset: %d", rtp_offset);
 
+  // processing packets in loop
   pcap_loop(pcap, 0, handle_pkt, NULL);
 
+  // cleanup
   srtp_destroy(s);
 
   return 0;
 }
+
+/**
+* Calculate the start of RTP frame in the packet.
+* Can be overridden by '-d' option
+*/
+static void calculate_rtp_offset(pcap_t* pcap) {
+    if (rtp_offset == -1) {
+        switch (pcap_datalink(pcap)) {
+        case DLT_LINUX_SLL: rtp_offset = 44; break; /* 16 + 20 + 8 */;
+        default:
+            rtp_offset = 42; /* 14 + 20 + 8 */;
+        }
+    }
+}
+

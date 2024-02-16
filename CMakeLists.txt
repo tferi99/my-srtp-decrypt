@@ -40,6 +40,7 @@ message(STATUS "Libraries for link: ${LIBRARIES_FOR_LINK}")
 add_executable (my-srtp-decrypt 
 	"srtp.c"
 	"srtp-decrypt.c"
+    "debug.c"
 )
 
 include_directories(
